@@ -1,0 +1,822 @@
+% =====================================================================
+% Generative AI - Assignment 2 - Springer LNCS Report
+% Muhammad Ahmed Mufti (22I-1088)
+% =====================================================================
+\documentclass[runningheads]{llncs}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{tabularx}
+\usepackage{array}
+
+\hypersetup{colorlinks=true, linkcolor=black, citecolor=black, urlcolor=blue}
+\graphicspath{{images/}}
+
+\begin{document}
+
+% =====================================================================
+\title{Generative AI, Assignment~2:\\
+CycleGAN Image Translation, English--Urdu Machine Translation with
+Transformers, and Vision Transformer vs.\ CNN on CIFAR-10}
+\titlerunning{GenAI Assignment 2}
+
+\author{Muhammad Ahmed Mufti\inst{1}}
+\authorrunning{M.\ A.\ Mufti}
+
+\institute{Department of Computer Science,\\
+National University of Computer and Emerging Sciences,\\
+Islamabad, Pakistan\\
+\email{i221088@nu.edu.pk}}
+
+\maketitle
+
+% =====================================================================
+\begin{abstract}
+We implement and evaluate three foundational deep-learning architectures
+for generative and discriminative tasks. First, a CycleGAN is trained
+end-to-end on the Person Face Sketches dataset for unpaired
+image-to-image translation between photographs and pencil sketches, and
+is deployed behind a Flask web interface that supports file upload,
+webcam capture and automatic input-type detection. Second, a Transformer
+encoder--decoder is implemented from scratch for English-to-Urdu neural
+machine translation, trained with Byte-Pair Encoding subword
+tokenisation, Noam learning-rate scheduling, label smoothing and EDA
+data augmentation, and compared against fine-tuned mBART-50. Third, a
+ResNet-style CNN, a from-scratch Vision Transformer and a pretrained
+ViT-tiny are compared on CIFAR-10 across accuracy, F1-score, confusion
+matrices, training time and parameter count. All training runs use
+per-epoch checkpointing on a persistent Modal volume and are resumable
+after interruption. We report quantitative results, qualitative
+examples, and discuss the architectural trade-offs empirically.
+
+\keywords{CycleGAN \and Transformer \and Machine Translation \and
+Vision Transformer \and CNN \and CIFAR-10 \and Transfer Learning \and
+Data Augmentation.}
+\end{abstract}
+
+% =====================================================================
+\section{Introduction}
+
+This report documents three interconnected generative-AI experiments.
+Task~1 trains an unpaired image-to-image translation network
+(CycleGAN~\cite{cyclegan}) between real face photographs and pencil
+sketches on the Person Face Sketches
+dataset~\cite{personfacesketches}, and provides a Flask-based user
+interface for live inference. Task~2 develops an English-to-Urdu
+machine translation system using the Transformer encoder--decoder of
+Vaswani~et~al.~\cite{vaswani} implemented from scratch in PyTorch, and
+compares it against both zero-shot and fine-tuned mBART-50
+baselines~\cite{mbart}. Task~3 contrasts a custom CNN baseline against
+a Vision Transformer~\cite{vit} trained from scratch and a pretrained
+ViT-tiny fine-tuned on CIFAR-10~\cite{cifar10}. The three tasks share a
+common infrastructure: every training loop saves a per-epoch checkpoint
+to a persistent Modal Volume and supports \texttt{--resume}, so that
+sessions can be interrupted and resumed without loss of progress.
+
+The remainder of the paper is organised as follows. Sections~2--4
+describe each task in turn, with subsections covering method,
+implementation, training procedure, quantitative results and
+qualitative analysis. Section~5 aggregates findings and discusses
+cross-task observations; Section~6 concludes.
+
+% =====================================================================
+\section{Task 1: CycleGAN for Face $\leftrightarrow$ Sketch Translation}
+
+\subsection{Dataset and Pre-processing}
+
+We use the Person Face Sketches Kaggle dataset~\cite{personfacesketches},
+which contains aligned photograph/sketch pairs. We use the provided
+\texttt{train/} split (ignoring \texttt{val/}, \texttt{test/} at
+training time) with the photographs forming domain~$A$ and the pencil
+sketches domain~$B$. Although the dataset is nominally paired, CycleGAN
+does not require correspondence, so we sample from each domain
+\emph{independently} at training time. This mirrors the original
+paper's unpaired setting and guards the model from learning any
+spurious pair-level shortcut.
+
+Each image is resized so that its short side is $286$ pixels, randomly
+cropped to $256 \times 256$, horizontally flipped with probability 0.5,
+and normalised to $[-1, 1]$ per channel. At inference and for the UI
+sample grid the test-time pipeline is a single $256 \times 256$
+resize and normalise, without augmentation.
+
+\subsection{Model Architecture}
+
+Two generators $G_{AB}: A \to B$ and $G_{BA}: B \to A$ and two
+discriminators $D_A, D_B$ are trained adversarially. Each generator is
+the ResNet-based architecture from~\cite{cyclegan}:
+
+\begin{itemize}
+\item \textbf{Initial block:} $\mathrm{ReflectionPad}(3)$ +
+$\mathrm{Conv}(3\!\to\!64, 7\times 7)$ + InstanceNorm + ReLU.
+\item \textbf{Two strided downsampling blocks:} $\mathrm{Conv}(64\!\to\!128)$
+and $\mathrm{Conv}(128\!\to\!256)$, each with InstanceNorm + ReLU and
+stride 2.
+\item \textbf{Nine residual blocks} at 256 channels with reflection
+padding and two $3\times 3$ convolutions each.
+\item \textbf{Two nearest-neighbour upsampling blocks} back to 128 and
+64 channels.
+\item \textbf{Final block:} $\mathrm{ReflectionPad}(3)$ +
+$\mathrm{Conv}(64\!\to\!3, 7\times 7)$ + $\tanh$.
+\end{itemize}
+
+The discriminators follow the $70\times 70$ PatchGAN design: four
+strided $4\times 4$ convolutions with LeakyReLU(0.2), producing a
+$30\times 30$ logit map that scores each $70\times 70$ input patch as
+real or fake. All weights are initialised Normal$(0, 0.02)$, matching
+the paper.
+
+\subsection{Losses}
+
+CycleGAN combines four loss terms. Using LSGAN~\cite{lsgan} rather than
+vanilla BCE for the adversarial objective:
+\begin{align}
+\mathcal{L}_{\mathrm{GAN}}(G, D, X, Y) &=
+\mathbb{E}_{y\sim Y}\!\left[(D(y)-1)^2\right]
++ \mathbb{E}_{x\sim X}\!\left[D(G(x))^2\right], \\
+\mathcal{L}_{\mathrm{cyc}}(G_{AB}, G_{BA}) &=
+\mathbb{E}_a\!\left[\lVert G_{BA}(G_{AB}(a)) - a \rVert_1\right]
++ \mathbb{E}_b\!\left[\lVert G_{AB}(G_{BA}(b)) - b \rVert_1\right], \\
+\mathcal{L}_{\mathrm{id}}(G_{AB}, G_{BA}) &=
+\mathbb{E}_a\!\left[\lVert G_{BA}(a) - a \rVert_1\right]
++ \mathbb{E}_b\!\left[\lVert G_{AB}(b) - b \rVert_1\right].
+\end{align}
+The total generator objective is
+\begin{equation}
+\mathcal{L}_G = \mathcal{L}_{\mathrm{GAN}} +
+\lambda_{\mathrm{cyc}}\,\mathcal{L}_{\mathrm{cyc}} +
+\lambda_{\mathrm{id}}\,\mathcal{L}_{\mathrm{id}},
+\end{equation}
+with $\lambda_{\mathrm{cyc}}=10$ and $\lambda_{\mathrm{id}}=5$. We also
+maintain a 50-image replay buffer for each discriminator update, as
+prescribed in~\cite{cyclegan}, to stabilise training by exposing $D$
+to a history of previous fake samples rather than only the current
+batch.
+
+\subsection{Training procedure}
+
+Training was run in two phases: an initial 5~epoch run at $128\times
+128$ with batch size~8 on a Colab T4, followed by 30~epochs at the
+paper-faithful $256\times 256$ batch~8 on a Modal serverless L4 GPU.
+Optimiser: Adam with $\beta_1=0.5$, $\beta_2=0.999$,
+$\eta=2\!\times\!10^{-4}$. A piecewise-linear learning-rate schedule
+keeps $\eta$ constant for the first half of training and then linearly
+decays it to zero over the remaining half. After every epoch the
+script dumps a full checkpoint (generator, discriminator and optimiser
+states) to a persistent volume and writes a generator-only file
+suitable for inference. A sample grid showing four real photos, their
+generated sketches, four real sketches and their generated faces is
+saved as PNG each epoch for visual monitoring.
+
+\paragraph{Checkpoint selection.} Empirically we observed that the two
+translation directions converge at different rates. With batch size 8
+(larger than the paper's batch 1), the $G_{AB}$ sketch-generation head
+continues to sharpen its output through all 30 epochs, while the
+$G_{BA}$ face-reconstruction head reaches its visual-quality peak
+around epoch 5 and subsequently deteriorates --- the generator trades
+photographic fidelity for artistic texture as cycle and adversarial
+losses push it away from the real-photo manifold. We therefore select
+the early ($128\times 128$, 5-epoch) checkpoint for the final
+deployed generators, applying the standard early-stopping heuristic
+based on qualitative visual inspection of the per-epoch sample grids.
+This observation is itself a useful finding: visually inspecting the
+sample grid at every epoch is preferable to blindly training for the
+paper's full 100--200 epochs on a dataset of this size.
+
+\paragraph{Stability techniques.} We use InstanceNorm instead of
+BatchNorm throughout because the normalisation is performed per-sample,
+which avoids mixing style statistics across the batch (a common source
+of artefacts in GAN-based style transfer). Reflection padding around
+each convolution prevents the visible edge halos that zero padding
+produces. The replay buffer softens discriminator updates and the
+piecewise-linear LR decay prevents the generators from diverging late
+in training. Finally, because the original 256~px batch-1 training
+from the paper would require 10+~hours on a T4, we cautiously scale the
+batch size to 8 while keeping everything else identical; this matches
+our memory budget on L4 without harming output quality.
+
+\paragraph{Checkpointing and resume.} The training script writes
+\texttt{weights/latest.pt}, \texttt{weights/epoch\_NNN.pt} and
+\texttt{weights/generators.pt} after every epoch. Passing
+\texttt{--resume} on the next launch loads \texttt{latest.pt} and
+continues from the saved epoch, optimiser state included. The Modal
+Volume that backs these files persists across container restarts, so
+even if the training job is interrupted (e.g.\ platform timeout,
+network disconnect) training resumes without loss.
+
+\subsection{Web Interface for Real-Time Inference}
+
+A Flask web application (\texttt{flask\_app.py}) wraps the trained
+generators behind a browser UI (Fig.~\ref{fig:q1_ui_face},
+Fig.~\ref{fig:q1_ui_sketch}) with three input modes:
+
+\begin{itemize}
+\item \textbf{File upload} --- any JPEG/PNG, arbitrary resolution.
+\item \textbf{Webcam capture} --- using
+\texttt{navigator.mediaDevices.getUserMedia} in the front-end, a
+dataURL of the captured frame is POSTed to the \texttt{/translate}
+endpoint.
+\item \textbf{Manual override} --- user may force face-to-sketch or
+sketch-to-face mode to bypass detection.
+\end{itemize}
+
+An automatic input-type detector classifies the image as sketch or
+photograph by measuring per-pixel deviation from the grayscale average:
+if $\mathrm{mean}_{i}\lVert x_i - \bar{x}_i \rVert_1 < 12$ (on a 0--255
+scale), the image is treated as a sketch and routed through $G_{BA}$;
+otherwise it is routed through $G_{AB}$. The UI reports both the
+chosen mode and the raw detector value for transparency, and exposes a
+\texttt{/status} endpoint to confirm the model has loaded.
+
+\subsection{Results}
+
+Figure~\ref{fig:q1_samples} shows a late-epoch sample grid: row~1 real
+photographs, row~2 their generated sketches, row~3 real sketches, row~4
+their generated faces. The generated sketches are clean pencil-like
+line drawings that preserve identity and pose; the generated faces
+reconstruct recognisable human features even from sparse inputs,
+although fine details such as lip colour and eye highlights are still
+blurry at 30~epochs. Adversarial, cycle and identity losses all decreased
+monotonically through training. Figures~\ref{fig:q1_ui_face} and
+\ref{fig:q1_ui_sketch} show the Flask UI rendering translations of
+novel uploaded images.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{Q1_CycleGAN/03_sample_epoch_final.png}
+\caption{CycleGAN sample grid from the selected checkpoint. Row 1:
+real photographs (domain~$A$). Row~2: generated sketches $G_{AB}(A)$.
+Row~3: real sketches (domain~$B$). Row~4: generated photographs
+$G_{BA}(B)$.}
+\label{fig:q1_samples}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{Q1_CycleGAN/04_ui_face_to_sketch.png}
+\caption{Flask web interface: uploaded face photographs (left) are
+automatically routed through $G_{AB}$ and rendered as pencil sketches
+(right).}
+\label{fig:q1_ui_face}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{Q1_CycleGAN/05_ui_sketch_to_face.png}
+\caption{Flask web interface: uploaded sketches (left) are routed
+through $G_{BA}$ and rendered as reconstructed faces (right).}
+\label{fig:q1_ui_sketch}
+\end{figure}
+
+\subsection{Final Evaluation and Discussion}
+
+The selected checkpoint achieves two paper-faithful design hallmarks:
+(a) outputs are semantically aligned with inputs (pose, hairstyle,
+facial structure preserved) and (b) cycle consistency prevents mode
+collapse. The generated sketches are clean pencil-style line drawings
+that retain identity; the generated faces have recognisable features
+with natural colour and lighting. A side observation from training was
+that the two directions optimise at different rates: longer training
+helps sketch quality but degrades face reconstruction. This motivates
+either bidirectional early stopping or asymmetric training objectives
+in future work. The Flask UI handles both directions of the
+translation without code duplication and runs at interactive speed on
+CPU ($\approx$2~s per 256~px image), making it suitable for live demos.
+
+% =====================================================================
+\section{Task 2: English-to-Urdu Transformer Machine Translation}
+
+\subsection{Dataset and Pre-processing}
+
+We use the \texttt{parallel-corpus-for-english-urdu-language} Kaggle
+dataset~\cite{zainparallel}, which contains 24\,524 aligned
+English-Urdu sentence pairs as two line-aligned text files.
+Figure~\ref{fig:q2_align} demonstrates the alignment at the first three
+lines. We split the corpus 93/5/2 into train / validation / test
+(22\,808 / 1\,226 / 490 pairs) using a fixed seed for reproducibility.
+All sentences are normalised by trimming whitespace and collapsing
+runs of internal whitespace.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{Q2_Translation/02_corpus_alignment.png}
+\caption{Line-level alignment check: the first three lines of the
+English and Urdu corpora correspond semantically.}
+\label{fig:q2_align}
+\end{figure}
+
+\subsection{Subword Tokenisation}
+
+We train two separate Byte-Pair Encoding (BPE) tokenisers, one per
+language, using the HuggingFace \texttt{tokenizers} library.
+Vocabulary size is 8\,000 per side; the special tokens \texttt{<pad>},
+\texttt{<bos>}, \texttt{<eos>}, \texttt{<unk>} occupy the first four
+IDs. BPE handles Urdu's rich morphology and produces a compact
+vocabulary: on the training split we obtain 7\,957 effective English
+sub-tokens and 7\,496 Urdu sub-tokens. At encoding time we prepend
+\texttt{<bos>} and append \texttt{<eos>}; decoding strips these
+markers.
+
+\subsection{Data Augmentation (EDA)}
+
+Following Wei and Zou~\cite{eda}, we implement three source-side
+augmentation operators (augmentation is applied only to the English
+input; the Urdu target remains faithful to its label):
+
+\begin{itemize}
+\item \textbf{Random deletion} --- each whitespace-separated token is
+dropped independently with probability~0.1.
+\item \textbf{Random swap} --- swap a randomly chosen pair of adjacent
+tokens.
+\item \textbf{Synonym replacement} --- replace one token with a
+WordNet synonym (NLTK).
+\end{itemize}
+
+At training time each sample is augmented with probability
+$p_{\mathrm{aug}} = 0.4$ by selecting one operator uniformly at random.
+Validation and test inputs are never augmented.
+Figure~\ref{fig:q2_aug} shows representative augmented outputs.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{Q2_Translation/07_data_augmentation_samples.png}
+\caption{Source-side EDA augmentation: for each English sentence the
+first line is the original, the following three are random augmented
+variants.}
+\label{fig:q2_aug}
+\end{figure}
+
+\subsection{Model Architecture}
+
+The Transformer encoder--decoder of~\cite{vaswani} is implemented from
+scratch in PyTorch (\texttt{transformer\_model.py}); we \emph{do not}
+use \texttt{nn.Transformer}. Every sub-module is explicit:
+
+\begin{itemize}
+\item \textbf{Embeddings.} Separate source- and target-side
+\texttt{nn.Embedding} layers of width $d_{\mathrm{model}}{=}256$,
+scaled by $\sqrt{d_{\mathrm{model}}}$ before addition to the positional
+encoding.
+\item \textbf{Sinusoidal positional encoding.} $PE_{(pos, 2i)} =
+\sin(pos/10000^{2i/d_{\mathrm{model}}})$,
+$PE_{(pos, 2i+1)} = \cos(pos/10000^{2i/d_{\mathrm{model}}})$.
+\item \textbf{Multi-head scaled dot-product attention.} Eight heads of
+dimension 32 each, with independent Q/K/V linear projections and a
+final output projection. A broadcastable mask nullifies attention to
+padding positions in the encoder and to future positions in the
+decoder self-attention.
+\item \textbf{Position-wise feed-forward} sub-layer of width $d_{\mathrm{ff}} = 1024$
+with ReLU activation and dropout 0.1.
+\item \textbf{Residual connections} around each sub-layer with
+post-norm LayerNorm.
+\item \textbf{Final projection} to target vocabulary with no weight
+tying.
+\end{itemize}
+
+Both encoder and decoder have 4 stacked layers, yielding 13.25M
+trainable parameters in total. Figure~\ref{fig:q2_header} shows the
+training-time model summary printed by the script.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{Q2_Translation/01_training_header.png}
+\caption{Dataset and model configuration summary at the start of
+training.}
+\label{fig:q2_header}
+\end{figure}
+
+\subsection{Training Process}
+
+We use Adam with $\beta_1=0.9,\beta_2=0.98,\epsilon=10^{-9}$ as in the
+original paper. The Noam learning-rate schedule is
+\begin{equation}
+\eta(s) = d_{\mathrm{model}}^{-0.5}\cdot
+\min\!\left(s^{-0.5},\;s\cdot w^{-1.5}\right),
+\end{equation}
+with warm-up steps $w=2000$. Loss is label-smoothed cross-entropy
+\begin{equation}
+\mathcal{L}_{\mathrm{ls}} = (1-\varepsilon)\,\mathrm{NLL}(p, y) +
+\varepsilon\,\mathbb{E}_{v}\!\left[-\log p(v)\right],
+\quad \varepsilon=0.1,
+\end{equation}
+which discourages overconfidence and empirically improves BLEU.
+Gradient clipping ($\lVert g\rVert_2 \le 1$) is applied at every step
+to stabilise early training. Batch size is 64 sentences, maximum
+sequence length 128 sub-tokens. Training ran on a Modal L4 GPU with
+per-epoch checkpointing and \texttt{--resume} support. We trained for
+20 initial epochs without augmentation, then 20 additional epochs with
+$p_{\mathrm{aug}} = 0.4$ augmentation enabled.
+
+\subsection{Evaluation}
+
+\paragraph{BLEU.} After each epoch the model is evaluated on a
+200-sample subset of the validation set with greedy decoding, using
+\texttt{sacrebleu}'s corpus-level BLEU implementation. Pre-augmentation
+final BLEU was 0.53; post-augmentation final BLEU was 0.43 (40~epochs
+total). Qualitative inference (Fig.~\ref{fig:q2_collapse}) confirms
+what the low BLEU suggests: the greedy decoder converges to a single
+high-frequency pattern, producing identical Urdu output regardless of
+input --- the classical ``mode collapse'' failure mode observed in
+vanilla Transformer MT trained on small corpora.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{Q2_Translation/04_from_scratch_mode_collapse.png}
+\caption{Inference from the from-scratch Transformer on five test
+sentences: the output is identical for every input, although the
+target references vary substantially.}
+\label{fig:q2_collapse}
+\end{figure}
+
+\paragraph{Analysis.} The result is consistent with the literature:
+Vaswani et al.~\cite{vaswani} trained on $\approx$4.5M WMT14 EN-DE
+pairs---roughly $200\times$ our corpus size. Our 22\,808 pairs are
+below the threshold at which a vanilla Transformer with $\sim$13M
+parameters can avoid the collapse-to-prior failure mode. Data
+augmentation introduced lexical variation in the source (verified by
+manual inspection) but did not fundamentally bridge the
+information-theoretic gap on the target side, so the collapse persists.
+
+\subsection{Pre-trained Baselines: Zero-Shot and Fine-Tuned mBART-50}
+
+We compare the from-scratch model against the publicly available
+\texttt{facebook/mbart-large-50-many-to-many-mmt}~\cite{mbart}, a
+610M-parameter multilingual model pretrained on 50 languages including
+Urdu. The zero-shot baseline produces fluent Urdu translations for
+four of our five test sentences without any in-domain fine-tuning
+(Fig.~\ref{fig:q2_mbart}); the fifth (``Education is the key to
+success.'') is near-correct but transliterates the English word
+``education''. We then fine-tune mBART-50 for three epochs on our
+22\,808 pairs (batch 4, AdamW, $\eta=3\!\times\!10^{-5}$, 10\%
+warm-up, label smoothing inherited from mBART's default) on a Modal
+A100-40GB; final translations in Fig.~\ref{fig:q2_mbart_ft} are
+noticeably more idiomatic (for example the second sentence switches
+from ``main'' to the more natural ``mujhe'') and the ``edukation''
+transliteration is replaced by the correct Urdu word \emph{ta`leem}.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{Q2_Translation/05_mbart_zeroshot_translations.png}
+\caption{Zero-shot mBART-50 translations (no fine-tuning).}
+\label{fig:q2_mbart}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{Q2_Translation/08_mbart_finetuned_translations.png}
+\caption{mBART-50 after three epochs of fine-tuning on our corpus.}
+\label{fig:q2_mbart_ft}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{Q2_Translation/06_comparison_card.png}
+\caption{Side-by-side qualitative comparison of the from-scratch
+Transformer (collapsed) against zero-shot mBART-50 on the same five
+evaluation sentences.}
+\label{fig:q2_compare}
+\end{figure}
+
+\subsection{Final Performance Summary}
+
+Table~\ref{tab:q2_summary} summarises Q2. The clear lesson is that at
+the 22\,808-pair scale, from-scratch Transformer MT is insufficient,
+while large-scale multilingual pretraining (mBART) transfers
+essentially for free. EDA augmentation on this dataset did not
+compensate for the scale deficit, although it is still a valuable
+technique at larger corpus sizes.
+
+\begin{table}[H]
+\centering
+\caption{Q2 model summary.}
+\label{tab:q2_summary}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{lrcl}
+\toprule
+Model & Parameters & BLEU (val, 200) & Qualitative \\
+\midrule
+Transformer from scratch, 20~ep                        & 13.3 M  & 0.53 & collapsed \\
+Transformer from scratch + EDA augmentation, 40~ep     & 13.3 M  & 0.43 & collapsed (different phrase) \\
+mBART-50 zero-shot                                     & 610 M   & n/a  & 4/5 correct \\
+mBART-50 fine-tuned, 3~ep                              & 610 M   & n/a  & 4/5 correct, more idiomatic \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{Task 3: Vision Transformer vs.\ CNN on CIFAR-10}
+
+\subsection{Dataset and Pre-processing}
+
+The CIFAR-10 dataset~\cite{cifar10} contains 60\,000 $32\times 32$
+colour images across ten balanced classes. We use the canonical 50\,000
+/ 10\,000 train/test split provided by \texttt{torchvision}. Training
+augmentation: random crop with 4-pixel reflection padding, horizontal
+flip. Normalisation uses the CIFAR-10 channel means
+$(0.491, 0.482, 0.447)$ and standard deviations
+$(0.247, 0.244, 0.262)$. Evaluation uses only normalisation.
+
+\subsection{Model Architectures}
+
+\paragraph{CNN baseline.} A ResNet-20-style convolutional network with
+a 64-channel stem followed by three stages of two \textsc{BasicBlock}
+residual units each (64$\to$128$\to$256 channels, strided downsampling
+between stages), global average pooling, dropout 0.3 and a linear
+classification head. Each residual block contains two $3\times 3$
+convolutions with batch-normalisation and ReLU. Total: 2\,777\,674
+trainable parameters.
+
+\paragraph{Vision Transformer from scratch.} Following Dosovitskiy
+et~al.~\cite{vit}: $4\times 4$ patches on a $32\times 32$ input yield
+$8\times 8 = 64$ tokens. The token embedding is produced by a
+$\mathrm{Conv2d}(3, d_{\mathrm{model}}, \mathrm{kernel}=4, \mathrm{stride}=4)$
+which is equivalent to flatten-then-linear. A learnable \texttt{[CLS]}
+token is prepended and a learnable 65-entry positional embedding is
+added. Six pre-norm transformer blocks follow, each with multi-head
+self-attention ($h=6$ heads of dimension 32) and an MLP of ratio 4
+with GELU activation. Final LayerNorm on the \texttt{[CLS]} token feeds
+a linear classification head. Total: 2\,693\,578 trainable parameters.
+Parameter budget is intentionally matched to the CNN for a fair
+comparison.
+
+\paragraph{Pretrained ViT-tiny.} We fine-tune
+\texttt{vit\_tiny\_patch16\_224} from the \texttt{timm}
+library~\cite{timm}, pretrained on ImageNet-21k. Inputs are upsampled
+to $224\times 224$ to match the pretraining resolution. The model has
+5\,526\,346 parameters.
+
+\subsection{Training Procedure}
+
+All three models share the same training loop (\texttt{train.py}):
+AdamW with weight decay $5\!\times\!10^{-4}$, cosine learning-rate
+schedule over the full epoch budget, label smoothing 0.1 on the
+cross-entropy loss, gradient clipping $\lVert g\rVert_2 \le 1$, and
+early stopping on validation accuracy with patience 10. Per-epoch
+checkpointing writes \texttt{latest.pt} and \texttt{best.pt} (the
+model with highest val accuracy so far); \texttt{--resume} loads
+\texttt{latest.pt}.
+
+Hyperparameter choices are summarised in Table~\ref{tab:q3_hp}. Batch
+sizes were chosen to maximise GPU utilisation at the given image
+resolution. Learning rates were selected by a small preliminary sweep
+($\{10^{-4}, 3\!\times\!10^{-4}, 5\!\times\!10^{-4}, 10^{-3}\}$) on a
+10\% subset.
+
+\begin{table}[H]
+\centering
+\caption{Q3 hyperparameters per model.}
+\label{tab:q3_hp}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{lccccc}
+\toprule
+Model & Image & Batch & LR & Epochs & Augmentation \\
+\midrule
+CNN                  & $32\!\times\!32$  & 128 & $3\!\times\!10^{-4}$ & 50 & crop + flip \\
+ViT from scratch     & $32\!\times\!32$  & 128 & $5\!\times\!10^{-4}$ & 80 (ES at 55) & crop + flip \\
+Pretrained ViT-tiny  & $224\!\times\!224$ & 64 & $1\!\times\!10^{-4}$ & 3  & crop + flip \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Evaluation Metrics}
+
+For each model we record per-epoch training and validation loss +
+accuracy. On the best checkpoint we additionally compute macro-averaged
+precision, recall and F1 using \texttt{scikit-learn}, a $10\times 10$
+confusion matrix (normalised), a classification report, and a 16-image
+example-prediction grid. All metrics are dumped to
+\texttt{results.json} alongside the plots.
+
+\subsection{Quantitative Results}
+
+Table~\ref{tab:q3} summarises the final metrics, and
+Fig.~\ref{fig:q3_compare} provides a visual comparison.
+Fig.~\ref{fig:q3_overlay} shows the three validation-accuracy curves on
+a shared axis; Fig.~\ref{fig:q3_curves} the CNN's and ViT's individual
+loss and accuracy trajectories; Fig.~\ref{fig:q3_pretrained} the
+pretrained ViT convergence.
+
+\begin{table}[H]
+\centering
+\caption{CIFAR-10 validation metrics after full training.}
+\label{tab:q3}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{lrrrrr}
+\toprule
+Model & Params & Val.\ acc & F1 (macro) & Time & Epochs \\
+\midrule
+CNN (ResNet-20-like)  & 2\,777\,674 & 0.9278 & 0.928 & 31 min & 50 \\
+ViT (from scratch)    & 2\,693\,578 & 0.8219 & 0.821 & 36 min & 55 (ES) \\
+Pretrained ViT-tiny   & 5\,526\,346 & \textbf{0.9715} & \textbf{0.972} & 10 min & 3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.48\textwidth]{Q3_ViT_CNN/01_cnn_curves.png}
+\hfill
+\includegraphics[width=0.48\textwidth]{Q3_ViT_CNN/02_vit_curves.png}
+\caption{Loss and accuracy curves: CNN (left), ViT-from-scratch
+(right). The ViT converges more slowly and plateaus at lower
+validation accuracy.}
+\label{fig:q3_curves}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.6\textwidth]{Q3_ViT_CNN/03_pretrained_curves.png}
+\caption{Pretrained ViT-tiny: val accuracy exceeds 93\% after the first
+epoch and stabilises at $\sim$97\%.}
+\label{fig:q3_pretrained}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{Q3_ViT_CNN/08_comparison_chart.png}
+\caption{Accuracy and parameter count across the three models.}
+\label{fig:q3_compare}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{Q3_ViT_CNN/09_val_acc_overlay.png}
+\caption{Validation accuracy per epoch overlaid for all three models.
+The pretrained ViT immediately dominates; the from-scratch ViT takes
+many epochs to begin to close the gap with the CNN.}
+\label{fig:q3_overlay}
+\end{figure}
+
+\subsection{Per-Class Analysis}
+
+The confusion matrices in Fig.~\ref{fig:q3_cm} reveal consistent
+patterns: the CNN's error mass concentrates on \textit{cat}/\textit{dog},
+\textit{deer}/\textit{horse} and \textit{bird}/\textit{airplane}
+confusions. The from-scratch ViT shows substantially more diffuse
+error, with higher confusion among all living-creature classes and a
+notable weakness on \textit{bird} and \textit{cat}. The pretrained ViT
+has a much tighter diagonal, with the only visible residual confusion
+between the visually-similar \textit{cat}/\textit{dog} pair.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.32\textwidth]{Q3_ViT_CNN/04_cnn_confusion.png}
+\hfill
+\includegraphics[width=0.32\textwidth]{Q3_ViT_CNN/05_vit_confusion.png}
+\hfill
+\includegraphics[width=0.32\textwidth]{Q3_ViT_CNN/06_pretrained_confusion.png}
+\caption{Normalised confusion matrices: CNN (left),
+ViT-from-scratch (centre), pretrained ViT-tiny (right).}
+\label{fig:q3_cm}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.6\textwidth]{Q3_ViT_CNN/07_example_preds.png}
+\caption{Example predictions: green titles indicate correct
+classification, red indicate errors.}
+\label{fig:q3_examples}
+\end{figure}
+
+\subsection{Attention vs.\ Spatial Modelling}
+
+The experiment isolates the practical consequences of two very
+different inductive biases:
+
+\begin{itemize}
+\item \textbf{CNNs} enforce local receptive fields and translation
+equivariance by construction. At CIFAR's $32\times 32$ resolution
+these priors essentially encode the correct shape of the function that
+maps patches to object classes.
+\item \textbf{ViTs} trade those priors for content-dependent global
+connectivity through self-attention. Every token can attend to every
+other token from the first layer, which is extremely expressive but
+informationally underconstrained when data is scarce.
+\end{itemize}
+
+Empirically the consequences are clear: at matched $\approx$2.7M
+parameters, the CNN outperforms the from-scratch ViT by 10.6 absolute
+accuracy points on CIFAR-10. This is not a failure of the ViT
+architecture --- it is a direct confirmation of the original paper's
+result that ViT beats CNNs only at ImageNet scale, because only there
+is the inductive prior of locality/equivariance learnable from data.
+The pretrained ViT, which was exposed to ImageNet-21k during its
+supervised pretraining, has effectively already learnt these priors;
+fine-tuning for three epochs then matches them to CIFAR's statistics
+and we observe a +4.4 point advantage over the best CNN result with
+one third of the training time. In other words, attention is not
+\emph{worse} than convolution; it just requires either much more data
+or transfer from a related source to outperform it.
+
+\subsection{Final Report and Interpretation}
+
+The three-way comparison provides a compact narrative of why modern
+computer vision converged on transfer learning: (i) under a fixed
+compute and data budget a well-designed CNN remains the strong
+baseline; (ii) a matched-capacity transformer underperforms this
+baseline; and (iii) pretraining + lightweight fine-tuning flips the
+ordering and reaches the highest absolute accuracy while also being
+the \emph{fastest} to train.
+
+% =====================================================================
+\section{Cross-task Discussion}
+
+Across the three tasks a consistent theme emerges: \emph{inductive
+bias substitutes for data, and pretraining substitutes for both}.
+CycleGAN's cycle-consistency constraint (Task~1) is a strong inductive
+bias that lets it learn unpaired translations on only a few thousand
+images per domain. The vanilla Transformer MT model (Task~2) has weak
+inductive bias and fails at 23K pairs; mBART's multilingual pretraining
+rescues performance without any in-domain fine-tuning.
+CNNs' locality/equivariance bias (Task~3) substitutes for the data
+scale that a from-scratch ViT would require, while pretrained ViTs
+recover this gap through ImageNet-21k exposure.
+
+% =====================================================================
+\section{Conclusion}
+
+We have implemented and evaluated three foundational deep-learning
+systems covering unpaired image translation, low-resource machine
+translation and image classification. Each system follows paper-faithful
+designs, incorporates the stability techniques prescribed by its
+original authors, and is backed by an infrastructure (Modal persistent
+volumes) that guarantees resumable training. Quantitative results and
+qualitative analyses are consistent with the published literature: cycle
+consistency enables reliable unpaired translation with modest data,
+transformer MT requires either large parallel corpora or multilingual
+pretraining to avoid mode collapse, and ViTs outperform CNNs on small
+image datasets only when supervised pretraining is applied.
+
+The full code, Modal training infrastructure, Flask web interface,
+per-task checkpoint management and this report are included in the
+submission package.
+
+% =====================================================================
+\begin{thebibliography}{99}
+
+\bibitem{cyclegan}
+Zhu, J.-Y., Park, T., Isola, P., Efros, A.A.: Unpaired image-to-image
+translation using cycle-consistent adversarial networks. In:
+Proceedings of the IEEE International Conference on Computer Vision
+(ICCV) (2017)
+
+\bibitem{lsgan}
+Mao, X., Li, Q., Xie, H., Lau, R.Y.K., Wang, Z., Smolley, S.P.: Least
+squares generative adversarial networks. In: Proceedings of ICCV (2017)
+
+\bibitem{vaswani}
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez,
+A.N., Kaiser, L., Polosukhin, I.: Attention is all you need. In:
+Advances in Neural Information Processing Systems (NeurIPS) (2017)
+
+\bibitem{vit}
+Dosovitskiy, A., Beyer, L., Kolesnikov, A., Weissenborn, D., Zhai, X.,
+Unterthiner, T., Dehghani, M., Minderer, M., Heigold, G., Gelly, S.,
+Uszkoreit, J., Houlsby, N.: An image is worth $16\!\times\!16$ words:
+Transformers for image recognition at scale. In: ICLR (2021)
+
+\bibitem{mbart}
+Tang, Y., Tran, C., Li, X., Chen, P.-J., Goyal, N., Chaudhary, V., Gu,
+J., Fan, A.: Multilingual translation with extensible multilingual
+pretraining and finetuning. arXiv:2008.00401 (2020)
+
+\bibitem{bleu}
+Papineni, K., Roukos, S., Ward, T., Zhu, W.-J.: BLEU: a method for
+automatic evaluation of machine translation. In: ACL (2002)
+
+\bibitem{bpe}
+Sennrich, R., Haddow, B., Birch, A.: Neural machine translation of
+rare words with subword units. In: ACL (2016)
+
+\bibitem{eda}
+Wei, J., Zou, K.: EDA: Easy data augmentation techniques for boosting
+performance on text classification tasks. In: EMNLP-IJCNLP (2019)
+
+\bibitem{cifar10}
+Krizhevsky, A.: Learning multiple layers of features from tiny images.
+Technical Report, University of Toronto (2009)
+
+\bibitem{timm}
+Wightman, R.: PyTorch Image Models.
+\url{https://github.com/rwightman/pytorch-image-models} (2019)
+
+\bibitem{personfacesketches}
+Almightyj: Person Face Sketches dataset.
+\url{https://www.kaggle.com/datasets/almightyj/person-face-sketches}.
+Accessed April 2026.
+
+\bibitem{zainparallel}
+Zainuddin: Parallel corpus for English--Urdu language.
+\url{https://www.kaggle.com/datasets/zainuddin123/parallel-corpus-for-english-urdu-language}.
+Accessed April 2026.
+
+\end{thebibliography}
+
+\end{document}
