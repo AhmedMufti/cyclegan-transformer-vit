@@ -30,13 +30,23 @@ Every model was implemented by hand rather than pulled from a high level wrapper
 
 The takeaway is the data efficiency gap. A small convolutional model beats an attention model of the same size on 50k images, while a Vision Transformer that was pretrained on a large corpus closes that gap and overtakes both within three epochs.
 
+![Accuracy and parameter comparison across the three models](screenshots/Q3_ViT_CNN/08_comparison_chart.png)
+
+![Validation accuracy across training for all three models](screenshots/Q3_ViT_CNN/09_val_acc_overlay.png)
+
 ### Q2 machine translation
 
 The from scratch Transformer trains cleanly but mode collapses on a 22.8k pair corpus, which is the expected behaviour at that scale and is documented honestly in the report. mBART-50 is included as a strong baseline, both zero shot and after a short fine tune, and produces fluent Urdu on the same test sentences.
 
+![Side by side translations from the scratch Transformer and mBART](screenshots/Q2_Translation/06_comparison_card.png)
+
 ### Q1 image translation
 
 A CycleGAN trained on the Person Face Sketches dataset. The face to sketch direction keeps improving with training, while the sketch to face direction peaks early and then degrades, so the shipped checkpoint mixes the best generator from each direction. The reasoning behind that choice is written up in the report and the project notes.
+
+![Web UI translating face photos into sketches](screenshots/Q1_CycleGAN/04_ui_face_to_sketch.png)
+
+![Web UI translating sketches into face photos](screenshots/Q1_CycleGAN/05_ui_sketch_to_face.png)
 
 ---
 
