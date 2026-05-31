@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# Model weights and checkpoints (too large for git, regenerate via training)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+weights/
+modal_out/
+modal_out_aug/
+modal_out_mbart/
+
+# Datasets and downloaded data
+data/
+*.tar.gz
+*.zip
+cifar-10-*/
+
+# Training and run logs
+*.log
+logs/
+samples/
+
+# OS and editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local tooling
+.claude/

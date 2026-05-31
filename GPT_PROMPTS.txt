@@ -1,0 +1,127 @@
+======================================================================
+GPT prompts used during the implementation of this assignment
+Student: <fill in before submission>
+======================================================================
+
+----------------------------------------------------------------------
+Q1 - CycleGAN for Person Face Sketches
+----------------------------------------------------------------------
+
+1. "Walk me through the CycleGAN architecture from Zhu et al. 2017.
+    What are the exact layer shapes of the ResNet-based generator for a
+    256x256 input, and what is the receptive field of the 70x70 PatchGAN
+    discriminator? Please cite the paper's section."
+
+2. "Write a PyTorch module for a CycleGAN ResNet generator with
+    reflection padding, InstanceNorm, and 9 residual blocks. Include the
+    weight-init function used in the paper (Normal(0, 0.02))."
+
+3. "Explain LSGAN loss vs vanilla GAN BCE loss, and why CycleGAN uses
+    the former. Include the mathematical form."
+
+4. "Give me a robust training loop in PyTorch that:
+       - uses MSE for adversarial loss,
+       - uses L1 for cycle and identity loss (lambda=10, lambda=5),
+       - stores a replay buffer of the last 50 generated images,
+       - saves checkpoints every epoch and supports --resume from the
+         latest checkpoint,
+       - uses linear LR decay after a specified epoch."
+
+5. "Suggest a lightweight heuristic for detecting whether an image is
+    a pencil sketch or a real face image, using only numpy on a PIL
+    image. I want this in a Flask app."
+
+6. "Generate a Flask app + HTML template with:
+       - file upload,
+       - webcam capture (navigator.mediaDevices.getUserMedia),
+       - auto-detect sketch vs face with an override dropdown,
+       - status endpoint showing whether weights were loaded."
+
+----------------------------------------------------------------------
+Q2 - English to Urdu Machine Translation with Transformers
+----------------------------------------------------------------------
+
+1. "Describe the original Vaswani Transformer encoder-decoder
+    architecture. I want to implement it from scratch in PyTorch
+    (not use nn.Transformer). Give me the exact component list."
+
+2. "Implement sinusoidal positional encoding in PyTorch, matching the
+    formula from 'Attention is All You Need'."
+
+3. "Write a multi-head scaled dot-product attention module in PyTorch,
+    using separate Q/K/V linear projections and supporting an optional
+    attention mask broadcastable to (B, h, Lq, Lk)."
+
+4. "Give me a BPE tokenizer training snippet using HuggingFace
+    tokenizers for an English-Urdu parallel corpus. Include saving and
+    loading, and reserve tokens <pad>, <bos>, <eos>, <unk>."
+
+5. "Explain Noam LR scheduling from Vaswani 2017 and give a PyTorch
+    implementation that works with torch.optim.Adam."
+
+6. "How do I compute BLEU score using sacrebleu on a test set of
+    English-Urdu pairs? Give me a self-contained evaluation function
+    given a PyTorch translation model."
+
+7. "Show me how to fine-tune facebook/mbart-large-50-many-to-many-mmt
+    on an English-Urdu parallel corpus. Include src_lang=en_XX and
+    forced_bos_token_id for ur_PK."
+
+8. "What label smoothing value does the paper recommend for MT, and
+    how is the label-smoothed cross-entropy loss defined? Give me a
+    PyTorch implementation."
+
+----------------------------------------------------------------------
+Q3 - Vision Transformer vs CNN on CIFAR-10
+----------------------------------------------------------------------
+
+1. "What is the simplest ViT configuration that can train on 32x32
+    CIFAR-10 images without pretraining? Suggest patch size, d_model,
+    depth, number of heads, and expected val accuracy."
+
+2. "Write a from-scratch ViT in PyTorch with:
+       - Conv2d patch embedding,
+       - learnable CLS token and positional embedding,
+       - pre-norm transformer blocks,
+       - GELU MLP,
+       - MLP head operating on the CLS token."
+
+3. "Suggest a ResNet-20 style CNN with roughly 2.7M parameters for
+    CIFAR-10 so it matches the parameter budget of my ViT for a fair
+    comparison."
+
+4. "Give me standard CIFAR-10 data augmentations (RandomCrop with
+    padding=4, RandomHorizontalFlip, normalisation) in torchvision."
+
+5. "What is the difference between the inductive biases of CNNs and
+    ViTs, and why does ViT usually underperform CNN on small datasets
+    like CIFAR?"
+
+6. "Which timm model is a good 'pretrained ViT-tiny' for CIFAR-10
+    fine-tuning? How much GPU memory does it need at 224x224 input?"
+
+7. "Generate a training script that logs per-epoch train/val loss and
+    accuracy, uses AdamW + cosine LR, label smoothing 0.1, gradient
+    clipping, early stopping on val accuracy, and dumps:
+       - a loss/acc curve PNG,
+       - a confusion matrix PNG,
+       - a JSON of final metrics.
+    I want --resume support via latest.pt."
+
+----------------------------------------------------------------------
+General prompts (used across tasks)
+----------------------------------------------------------------------
+
+1. "Write a minimal Google Colab notebook that:
+       - uploads kaggle.json via google.colab.files,
+       - installs the kaggle CLI,
+       - downloads a Kaggle dataset,
+       - uploads local .py files,
+       - runs a training script with GPU."
+
+2. "Give me a clean Python virtualenv setup for a Windows laptop
+    running Python 3.12 for a PyTorch 2.x + HuggingFace project."
+
+3. "How do I structure a 3-task ML project folder for an academic
+    assignment submission? Each task has training + inference + UI/
+    demo, plus a report and a GPT-prompts file."
