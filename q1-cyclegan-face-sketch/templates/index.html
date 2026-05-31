@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>CycleGAN: Face &#8596; Sketch</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --accent:#38bdf8; --muted:#64748b; }
+    body { background:var(--bg); color:var(--fg); font-family:system-ui,Segoe UI,Roboto,sans-serif; margin:0; }
+    header { padding:1.2rem 2rem; background:#0b1220; border-bottom:1px solid #1e293b; }
+    header h1 { margin:0; font-size:1.25rem; }
+    main { max-width:1100px; margin:2rem auto; padding:0 1.5rem; display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; }
+    .card { background:var(--card); border-radius:12px; padding:1.5rem; box-shadow:0 4px 16px rgba(0,0,0,.25); }
+    .card h2 { margin-top:0; font-size:1.05rem; color:var(--accent); }
+    button, label.btn { background:var(--accent); color:#0b1220; border:0; padding:.55rem 1rem; border-radius:8px; cursor:pointer; font-weight:600; font-size:.9rem; }
+    button.secondary, label.btn.secondary { background:transparent; color:var(--accent); border:1px solid var(--accent); }
+    button[disabled] { opacity:.5; cursor:not-allowed; }
+    input[type=file] { display:none; }
+    select { background:#0b1220; color:var(--fg); border:1px solid #334155; padding:.45rem .6rem; border-radius:6px; }
+    .row { display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; margin-bottom:1rem; }
+    .preview { background:#0b1220; border-radius:8px; min-height:260px; display:flex; align-items:center; justify-content:center; padding:.5rem; }
+    .preview img, .preview video, .preview canvas { max-width:100%; max-height:420px; border-radius:6px; }
+    .meta { color:var(--muted); font-size:.85rem; margin-top:.7rem; }
+    .status { font-size:.85rem; color:var(--muted); }
+    .ok { color:#4ade80; } .bad { color:#f87171; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CycleGAN &mdash; Face &#8596; Sketch translator</h1>
+    <div class="status" id="status">checking model&hellip;</div>
+  </header>
+  <main>
+    <section class="card">
+      <h2>Input</h2>
+      <div class="row">
+        <label class="btn" for="file">Upload image</label>
+        <input type="file" id="file" accept="image/*" />
+        <button class="secondary" id="cam-toggle" type="button">Use webcam</button>
+        <button class="secondary" id="cam-snap" type="button" disabled>Capture</button>
+        <select id="mode">
+          <option value="auto">Auto-detect</option>
+          <option value="face2sketch">Face &#8594; Sketch</option>
+          <option value="sketch2face">Sketch &#8594; Face</option>
+        </select>
+      </div>
+      <div class="preview" id="input-preview">
+        <span class="meta">No image yet</span>
+      </div>
+      <div class="row" style="margin-top:1rem;">
+        <button id="translate-btn" disabled>Translate</button>
+      </div>
+      <div class="meta" id="input-meta"></div>
+    </section>
+
+    <section class="card">
+      <h2>Output</h2>
+      <div class="preview" id="output-preview">
+        <span class="meta">Translation will appear here</span>
+      </div>
+      <div class="meta" id="output-meta"></div>
+    </section>
+  </main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let currentDataURL = null;
+let videoStream = null;
+
+async function refreshStatus() {
+  try {
+    const r = await fetch("/status"); const s = await r.json();
+    const el = $("status");
+    if (s.loaded) {
+      el.innerHTML = `<span class="ok">Model loaded</span> &middot; device: ${s.device} &middot; weights: ${s.weights}`;
+    } else {
+      el.innerHTML = `<span class="bad">Model not loaded</span> &mdash; ${s.error || ""}`;
+    }
+  } catch (e) { $("status").textContent = "status error"; }
+}
+
+function showInput(dataURL) {
+  currentDataURL = dataURL;
+  $("input-preview").innerHTML = `<img src="${dataURL}" alt="input"/>`;
+  $("translate-btn").disabled = false;
+}
+
+$("file").addEventListener("change", (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => showInput(r.result);
+  r.readAsDataURL(f);
+});
+
+$("cam-toggle").addEventListener("click", async () => {
+  if (videoStream) {
+    videoStream.getTracks().forEach(t => t.stop());
+    videoStream = null;
+    $("cam-toggle").textContent = "Use webcam";
+    $("cam-snap").disabled = true;
+    $("input-preview").innerHTML = `<span class="meta">No image yet</span>`;
+    return;
+  }
+  try {
+    videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+    const video = document.createElement("video");
+    video.srcObject = videoStream; video.autoplay = true; video.playsInline = true;
+    $("input-preview").innerHTML = ""; $("input-preview").appendChild(video);
+    $("cam-toggle").textContent = "Stop webcam";
+    $("cam-snap").disabled = false;
+  } catch (err) { alert("Webcam error: " + err.message); }
+});
+
+$("cam-snap").addEventListener("click", () => {
+  const video = $("input-preview").querySelector("video");
+  if (!video) return;
+  const c = document.createElement("canvas");
+  c.width = video.videoWidth; c.height = video.videoHeight;
+  c.getContext("2d").drawImage(video, 0, 0);
+  showInput(c.toDataURL("image/png"));
+});
+
+$("translate-btn").addEventListener("click", async () => {
+  if (!currentDataURL) return;
+  $("translate-btn").disabled = true; $("output-meta").textContent = "translating...";
+  const fd = new FormData();
+  fd.append("dataurl", currentDataURL);
+  const mode = $("mode").value;
+  if (mode !== "auto") fd.append("mode", mode);
+  try {
+    const r = await fetch("/translate", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || "translation failed");
+    $("output-preview").innerHTML = `<img src="${j.result}" alt="output"/>`;
+    $("output-meta").textContent = `mode: ${j.mode} (auto-detected sketch: ${j.detected_sketch})`;
+  } catch (e) {
+    $("output-meta").textContent = "error: " + e.message;
+  } finally {
+    $("translate-btn").disabled = false;
+  }
+});
+
+refreshStatus();
+</script>
+</body>
+</html>
